@@ -1,0 +1,511 @@
+---
+title: "ADA Final Project Analysis"
+author: "Taylor Kaser"
+date: "2022-11-20"
+output: html_document
+---
+
+```{r include=FALSE}
+#open libraries
+pacman::p_load(haven, tidyverse, naniar, VIM, mice, lattice, table1, lubridate, lmtest) 
+```
+
+
+```{r include=FALSE}
+# Read in the data
+setwd("C:/Users/15416/OneDrive/Documents/Fall 2022/ADA/Final Project/ICPSR_38429")
+
+# Reading in the data from an external file as opposed to using the dataframe created in the data management Rmd
+# reduces memory usage needed for imputations
+victim_data <- read_csv("Final_project_data.csv")
+
+# Change data types from characters to factors
+victim_data <- victim_data %>%
+  mutate_if(is.character, as.factor) %>%
+  # Recorder factor levels
+  mutate(bio_sex = factor(bio_sex,
+                       levels = c("Male","Female"))) %>%
+  mutate(race = factor(race,
+                       levels = c("White", "Black",
+                                      "Other"))) %>%
+  mutate(knows_perp = factor(knows_perp,
+                       levels = c('Stranger','Relative','Other Known','Intimate Partner'))) %>%
+  mutate(repeatinj_yn = factor(repeatinj_yn,
+                       levels = c('No','Yes'))) %>%
+  mutate(age.times.logage = age * log(age)) # create term to test linearity assumption for logistic   regression
+```
+
+
+# Statistical analysis 
+
+## Missing data
+
+Plan: Missing data for any variables included in the analysis will be addressed using multiple imputation. 
+
+```{r Examine missing data patterns}
+# Examine missing data patterns
+md.pattern(victim_data, rotate.names=TRUE)
+
+# 250/337 appear to be complete (74.2%)
+## >10% missing. Justifies need to perform multiple imputations
+# There does not appear to be strong correlations between variables in terms of missingness
+# Total of 6 missing variable patterns - only 2 include more than one missing variable
+
+# Determine percentage of missing data in each column.
+colMeans(is.na(victim_data))*100
+# data for relationship to perpetrator is >10%. Also want to do MI because we have
+# a small sample size and want to retain as many observations as possible
+```
+
+```{r MI}
+# Impute missing data
+# Setting m=9 since there are 9 variables that will be included in the imputation algorithm
+
+imp<-mice(victim_data, m=9, maxit=5, seed=219) 
+
+# Remove variables we do not want to use as predictors in the imputation algorithm:
+# Participant and household ID, year of survey, and month-year of incident (only used for identifying the index injury, not as a predictor of the outcome)
+pred <- imp$predictorMatrix
+pred[, "IDPER"] <- 0
+pred[, "YEARQ"] <- 0
+pred[, "IDHH"] <- 0
+pred[, "my_incident"] <- 0
+pred[, "age.times.logage"] <- 0
+pred
+
+imp<-mice(victim_data, pred = pred, m=9, maxit=5, seed=219)
+
+# print initial imputation details
+imp
+
+```
+
+```{r MI diagnostics}
+# Run diagnostics for the imputed model
+## the rows contain the imputed values and the columns are the multiple imputations
+
+# check relationship to perpetrator
+imp$imp$knows_perp
+
+# check law enforcement involvement
+imp$imp$report_LE
+
+# check injury type
+imp$imp$inj_type
+
+# check incident location (near or at participants' residence (Y/N))
+imp$imp$incdt_location
+
+# # Column 1 are observation numbers
+# # The remaining columns refer to the imputation number
+```
+
+```{r Obtain complete imputed dataset}
+
+# Obtain complete imputed datasets in a dataframe using the complete function from the mice package
+## We will use this for testing regression assumptions
+
+imp_data1  <-mice::complete(data=imp, action = 1) 
+imp_data2  <-mice::complete(data=imp, action = 2) 
+imp_data3  <-mice::complete(data=imp, action = 3) 
+imp_data4  <-mice::complete(data=imp, action = 4) 
+imp_data5  <-mice::complete(data=imp, action = 5)  
+imp_data6  <-mice::complete(data=imp, action = 6)  
+imp_data7  <-mice::complete(data=imp, action = 7) 
+imp_data8  <-mice::complete(data=imp, action = 8)  
+imp_data9  <-mice::complete(data=imp, action = 9)  
+
+#longimp <- mice::complete(data=imp, action="long") # To get all the imputations in one dataset provide the action "long". Two columns are added: 1) .imp, integer, referring the imputation number, and 2) .id, character, the row names of data$data;
+
+# Compare imputed dataset 1 with observational data
+
+table1(~ age + bio_sex + race + knows_perp + report_LE + inj_type + incdt_location + sought_care | repeatinj_yn,
+       data = victim_data)
+
+table1(~ age + bio_sex + race + knows_perp + report_LE + inj_type + incdt_location + sought_care | repeatinj_yn,
+       data = imp_data1)
+
+```
+
+## Create bar plot for the association between seeking medical care and violent reinjury
+
+```{r}
+# Use a grouped bar chart
+victim_data %>%
+  group_by(sought_care, repeatinj_yn) %>%
+  count() %>%
+  group_by(sought_care) %>%
+  mutate(perc.sought_care = 100*n/sum(n)) %>%
+  ggplot(aes(x = sought_care, y = perc.sought_care, fill = repeatinj_yn)) +
+  geom_col(position = "stack") +
+  theme_minimal(base_size = 12) +
+  labs(x = "\nSought care after violent injury?",
+       y = "Percent of participants\n",
+       title = "Figure 1: The association between seeking care for violent injury \nand experiencing repeat violent injury (Observational Data).",
+       fill = "Experienced \nviolent reinjury?") +
+  scale_fill_manual(values = c("#2BC9B5", "#A0345C"))  
+
+imp_data1 %>%
+  group_by(sought_care, repeatinj_yn) %>%
+  count() %>%
+  group_by(sought_care) %>%
+  mutate(perc.sought_care = 100*n/sum(n)) %>%
+  ggplot(aes(x = sought_care, y = perc.sought_care, fill = repeatinj_yn)) +
+  geom_col(position = "stack") +
+  theme_minimal(base_size = 12) +
+  labs(x = "\nSought care after violent injury?",
+       y = "Percent of participants\n",
+       title = "Figure 2: The association between seeking care for violent injury \nand experiencing repeat violent injury (Imputed Dataset #1).",
+       fill = "Experienced \nviolent reinjury?") +
+  scale_fill_manual(values = c("#2BC9B5", "#A0345C"))  
+
+imp_data2 %>%
+  group_by(sought_care, repeatinj_yn) %>%
+  count() %>%
+  group_by(sought_care) %>%
+  mutate(perc.sought_care = 100*n/sum(n)) %>%
+  ggplot(aes(x = sought_care, y = perc.sought_care, fill = repeatinj_yn)) +
+  geom_col(position = "stack") +
+  theme_minimal(base_size = 12) +
+  labs(x = "\nSought care after violent injury?",
+       y = "Percent of participants\n",
+       title = "Figure 3: The association between seeking care for violent injury \nand experiencing repeat violent injury (Imputed Dataset #2).",
+       fill = "Experienced \nviolent reinjury?") +
+  scale_fill_manual(values = c("#2BC9B5", "#A0345C")) 
+
+# Might not include in the final presentation. These aren't that helpful.
+
+```
+
+##  Primary objective: Determine whether accessing healthcare following a violent injury is associated with lower odds of violent reinjury.
+
+```{r fit logistic regression model}
+# Fit logistic regression model for violent reinjury
+
+reinj_model <- glm(repeatinj_yn ~ age + bio_sex + race + knows_perp + report_LE +
+                   inj_type + incdt_location + sought_care,
+                      data = victim_data,
+                      family = binomial(link = "logit"))
+
+# Fit logistic regression model for violent reinjury using imputed data
+
+reinj_model_imp <- with(imp, glm(repeatinj_yn ~ age + bio_sex + race + knows_perp + report_LE +
+                   inj_type + incdt_location + sought_care,
+                      data = victim_data,
+                      family = binomial(link = "logit")))
+
+# examine model output
+summary(reinj_model)
+summary(pool(reinj_model_imp))
+
+# Exponentiate/generate confidence intervals using tidy::broom
+broom::tidy(reinj_model, exponentiate = TRUE, conf.int = TRUE)
+broom::tidy(pool(reinj_model_imp), exponentiate = TRUE, conf.int = TRUE)
+
+# Note: coefficient estimates are ~ the same for the imputed and non-imputed datasets
+```
+
+```{r Fit unadjusted models}
+
+# Fit unadjusted models for comparison
+
+reinj_model_unadj <- glm(repeatinj_yn ~ sought_care,
+                      data = victim_data,
+                      family = binomial(link = "logit"))
+
+# Fit logistic regression model for violent reinjury using imputed data
+
+reinj_model_impunadj <- with(imp, glm(repeatinj_yn ~ sought_care,
+                      data = victim_data,
+                      family = binomial(link = "logit")))
+
+# examine model output
+summary(reinj_model_unadj)
+summary(pool(reinj_model_impunadj))
+
+# Exponentiate/generate confidence intervals using tidy::broom
+broom::tidy(reinj_model_unadj, exponentiate = TRUE, conf.int = TRUE)
+broom::tidy(pool(reinj_model_impunadj), exponentiate = TRUE, conf.int = TRUE)
+
+# Note: coefficient estimates are ~ the same for the imputed and non-imputed datasets
+```
+
+
+## Test assumptions
+
+```{r Test Linearity}
+# Test the linearity assumption for age using the Box Tidwell test. 
+
+# We created a term for age*log(age) previously in order to prepare for testing this assumption.  
+#Remember, a SIGNIFICANT (i.e. p < .05) coefficient means the assumption IS VIOLATED
+
+# Test assumption on imputed dataset #1
+
+reinj_model_bttest1 <- (glm(repeatinj_yn ~ age + bio_sex + race + knows_perp + report_LE +
+                   inj_type + incdt_location + sought_care + age.times.logage,
+                      data = imp_data1,
+                      family = binomial(link = "logit")))
+
+broom::tidy(reinj_model_bttest1, exponentiate = TRUE, conf.int = TRUE)
+# p = 0.395 - assumption is met.
+
+# Test assumption on imputed dataset #2
+
+reinj_model_bttest2 <- (glm(repeatinj_yn ~ age + bio_sex + race + knows_perp + report_LE +
+                   inj_type + incdt_location + sought_care + age.times.logage,
+                      data = imp_data2,
+                      family = binomial(link = "logit")))
+
+broom::tidy(reinj_model_bttest2, exponentiate = TRUE, conf.int = TRUE)
+# p = 0.546 - assumption is met.
+
+# Test assumption on imputed dataset #3
+
+reinj_model_bttest3 <- (glm(repeatinj_yn ~ age + bio_sex + race + knows_perp + report_LE +
+                   inj_type + incdt_location + sought_care + age.times.logage,
+                      data = imp_data3,
+                      family = binomial(link = "logit")))
+
+broom::tidy(reinj_model_bttest3, exponentiate = TRUE, conf.int = TRUE)
+# p = 0.485 - assumption is met.
+
+# Test assumption on imputed dataset #4
+
+reinj_model_bttest4 <- (glm(repeatinj_yn ~ age + bio_sex + race + knows_perp + report_LE +
+                   inj_type + incdt_location + sought_care + age.times.logage,
+                      data = imp_data4,
+                      family = binomial(link = "logit")))
+
+broom::tidy(reinj_model_bttest4, exponentiate = TRUE, conf.int = TRUE)
+# p = 0.457 - assumption is met.
+
+# Test assumption on imputed dataset #5
+
+reinj_model_bttest5 <- (glm(repeatinj_yn ~ age + bio_sex + race + knows_perp + report_LE +
+                   inj_type + incdt_location + sought_care + age.times.logage,
+                      data = imp_data5,
+                      family = binomial(link = "logit")))
+
+broom::tidy(reinj_model_bttest5, exponentiate = TRUE, conf.int = TRUE)
+# p = 0.494 - assumption is met.
+
+# Test assumption on imputed dataset #6
+
+reinj_model_bttest6 <- (glm(repeatinj_yn ~ age + bio_sex + race + knows_perp + report_LE +
+                   inj_type + incdt_location + sought_care + age.times.logage,
+                      data = imp_data6,
+                      family = binomial(link = "logit")))
+
+broom::tidy(reinj_model_bttest6, exponentiate = TRUE, conf.int = TRUE)
+# p = 0.543 - assumption is met.
+
+# Test assumption on imputed dataset #7
+
+reinj_model_bttest7 <- (glm(repeatinj_yn ~ age + bio_sex + race + knows_perp + report_LE +
+                   inj_type + incdt_location + sought_care + age.times.logage,
+                      data = imp_data7,
+                      family = binomial(link = "logit")))
+
+broom::tidy(reinj_model_bttest7, exponentiate = TRUE, conf.int = TRUE)
+# p = 0.363 - assumption is met.
+
+# Test assumption on imputed dataset #8
+
+reinj_model_bttest8 <- (glm(repeatinj_yn ~ age + bio_sex + race + knows_perp + report_LE +
+                   inj_type + incdt_location + sought_care + age.times.logage,
+                      data = imp_data8,
+                      family = binomial(link = "logit")))
+
+broom::tidy(reinj_model_bttest8, exponentiate = TRUE, conf.int = TRUE)
+# p = 0.683 - assumption is met.
+
+# Test assumption on imputed dataset #9
+
+reinj_model_bttest9 <- (glm(repeatinj_yn ~ age + bio_sex + race + knows_perp + report_LE +
+                   inj_type + incdt_location + sought_care + age.times.logage,
+                      data = imp_data9,
+                      family = binomial(link = "logit")))
+
+broom::tidy(reinj_model_bttest9, exponentiate = TRUE, conf.int = TRUE)
+# p = 0.492 - assumption is met.
+
+```
+
+```{r Test Multicollinearity}
+# Test multicollinearity assumption using Variance Inflation Factors
+
+# We will create and test individual models for each imputed dataset
+
+### IMPUTED MODEL 1
+
+reinj_model_vif1 <- (glm(repeatinj_yn ~ age + bio_sex + race + knows_perp + 
+                           report_LE + inj_type + incdt_location + sought_care,
+                      data = imp_data1,
+                      family = binomial(link = "logit")))
+
+# Use the vif function from the car package
+
+jtools::summ(reinj_model_vif1, vifs = TRUE)
+# All VIF < 2.5. Assumption is met.
+
+### IMPUTED MODEL 2
+
+reinj_model_vif2 <- (glm(repeatinj_yn ~ age + bio_sex + race + knows_perp + 
+                           report_LE + inj_type + incdt_location + sought_care,
+                      data = imp_data2,
+                      family = binomial(link = "logit")))
+
+# Use the vif function from the car package
+
+jtools::summ(reinj_model_vif2, vifs = TRUE)
+# All VIF < 2.5. Assumption is met.
+
+### IMPUTED MODEL 3
+
+reinj_model_vif3 <- (glm(repeatinj_yn ~ age + bio_sex + race + knows_perp + 
+                           report_LE + inj_type + incdt_location + sought_care,
+                      data = imp_data3,
+                      family = binomial(link = "logit")))
+
+# Use the vif function from the car package
+
+jtools::summ(reinj_model_vif3, vifs = TRUE)
+# All VIF < 2.5. Assumption is met.
+
+### IMPUTED MODEL 4
+
+reinj_model_vif4 <- (glm(repeatinj_yn ~ age + bio_sex + race + knows_perp + 
+                           report_LE + inj_type + incdt_location + sought_care,
+                      data = imp_data4,
+                      family = binomial(link = "logit")))
+
+# Use the vif function from the car package
+
+jtools::summ(reinj_model_vif4, vifs = TRUE)
+# All VIF < 2.5. Assumption is met.
+
+### IMPUTED MODEL 5
+
+reinj_model_vif5 <- (glm(repeatinj_yn ~ age + bio_sex + race + knows_perp + 
+                           report_LE + inj_type + incdt_location + sought_care,
+                      data = imp_data5,
+                      family = binomial(link = "logit")))
+
+# Use the vif function from the car package
+
+jtools::summ(reinj_model_vif5, vifs = TRUE)
+# All VIF < 2.5. Assumption is met.
+
+### IMPUTED MODEL 6
+
+reinj_model_vif6 <- (glm(repeatinj_yn ~ age + bio_sex + race + knows_perp + 
+                           report_LE + inj_type + incdt_location + sought_care,
+                      data = imp_data6,
+                      family = binomial(link = "logit")))
+
+# Use the vif function from the car package
+
+jtools::summ(reinj_model_vif6, vifs = TRUE)
+# All VIF < 2.5. Assumption is met.
+
+### IMPUTED MODEL 7
+
+reinj_model_vif7 <- (glm(repeatinj_yn ~ age + bio_sex + race + knows_perp + 
+                           report_LE + inj_type + incdt_location + sought_care,
+                      data = imp_data7,
+                      family = binomial(link = "logit")))
+
+# Use the vif function from the car package
+
+jtools::summ(reinj_model_vif7, vifs = TRUE)
+# All VIF < 2.5. Assumption is met.
+
+### IMPUTED MODEL 8
+
+reinj_model_vif8 <- (glm(repeatinj_yn ~ age + bio_sex + race + knows_perp + 
+                           report_LE + inj_type + incdt_location + sought_care,
+                      data = imp_data8,
+                      family = binomial(link = "logit")))
+
+# Use the vif function from the car package
+
+jtools::summ(reinj_model_vif8, vifs = TRUE)
+# All VIF < 2.5. Assumption is met.
+
+### IMPUTED MODEL 9
+
+reinj_model_vif9 <- (glm(repeatinj_yn ~ age + bio_sex + race + knows_perp + 
+                           report_LE + inj_type + incdt_location + sought_care,
+                      data = imp_data9,
+                      family = binomial(link = "logit")))
+
+# Use the vif function from the car package
+
+jtools::summ(reinj_model_vif9, vifs = TRUE)
+# All VIF < 2.5. Assumption is met.
+```
+
+## Identify Influential Observations
+
+```{r Plot Cooks Distance}
+# Identify any extreme outliers
+# Used model created with observational data
+
+# Plot Cook's Distance - the higher the distance, the more it is considered an outlier
+### Note, this works better for continuous variables than categorical
+plot(reinj_model, which = 4, id.n = 3, col="red") 
+
+```
+
+
+```{r Cooks D calculations}
+## Get Cook's D calculations for each observation and using the augment function  from Broom.
+
+model.data <- broom::augment(reinj_model) %>%  # Allows you to get Cook's distance in a dataframe
+  mutate(index = 1:n()) 
+
+head(model.data)
+```
+
+
+```{r}
+## Identify and exclude observations with a Cook's Distance greater than a cutoff, use 3 x the mean Cook's D
+
+# Cutoffs from the lecture
+#cuttoff <- mean(model.data$.cooksd)*3 - (removed 33.8% of data points)
+# cuttoff <- (4/337) # defines cutoff variable (4/N) - (removed 35% of data points)
+ cuttoff <- 1 # (removed 25.8% of the data)
+
+# Define cuttoff using influential values revealed by the graph 
+#cuttoff <- 0.04 - (removed 26.7% of data points) 
+
+victim_data_out <- model.data %>% # excludes observations
+  dplyr::filter(.cooksd < cuttoff)
+
+nrow(victim_data_out)/nrow(victim_data) # check percent kept
+
+# Elect to keep all observations since Cook's distance indicates removing 1/4 - 1/3 of the data.
+```
+## Secondary Objective: Determine whether injury type modifies the association between accessing healthcare following violent injury and violent reinjury
+
+```{r}
+# Compare models with and without interaction between injury type and accessing care
+## Use D3 for LR test
+
+LR_int_model <- with(imp,glm(repeatinj_yn ~ age + bio_sex + race + knows_perp + report_LE +
+                    incdt_location + sought_care*inj_type,
+                      data = victim_data,
+                      family = binomial(link = "logit")))
+
+D3(LR_int_model, reinj_model_imp)
+
+# p-value = 0.451 - no effect modification by injury type
+
+```
+
+
+
+
+
+
+
