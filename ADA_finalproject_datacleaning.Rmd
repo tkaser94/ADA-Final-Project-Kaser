@@ -1,0 +1,696 @@
+---
+title: "ADA Final Project - Data Cleaning"
+author: "Taylor Kaser"
+date: "2022-11-08"
+output: html_document
+editor_options: 
+  markdown: 
+    wrap: 72
+---
+
+## Project Title: Investigating the effect of healthcare engagement following violent injury for protecting against reinjury.
+
+## Objectives
+
+**Primary Objective:** Determine whether accessing healthcare following
+a violent injury is associated with lower odds of violent reinjury.
+
+**Secondary Objective:** Determine whether injury type modifies the
+association between accessing healthcare following violent injury and
+violent reinjury.
+
+**PICOT
+
+-   P - Victims of violence
+
+-   I - Accessing professional medical care following injury, including
+    hospital, ED, clinic visit, and behavioral health visit
+
+-   C - People who did not access any form of professional medical care
+    following violent injury
+
+-   T - 01/01/2021 - 12/31/2021
+
+
+**Data source:** National Crime Victimization Survey, [United States],
+2021 (ICPSR 38429)
+
+-   Link:
+    <https://www.icpsr.umich.edu/web/NACJD/studies/38429/datadocumentation>
+
+**Primary exposure:** Receipt of healthcare services post violent injury
+
+**Primary outcome:** Violent reinjury (binary Y/N) Hypothesized
+moderator: injury type
+
+## The DAG
+
+Link: (<http://dagitty.net/dags.html?id=K0ouMx>)
+
+![](DAG_10.23.png)
+
+The DAG revealed the minimum set of covariates that need to be adjusted
+for:
+
+**Covariates**
+
+-   Age
+
+-   Sex
+
+-   Race
+
+-   Law Enforcement involvement
+
+-   Relationship between offender and victim
+
+-   Whether the incident occurred at or near the victim's residence
+
+## Data management
+
+### Date Last Modified: 12/04/2022
+
+## Load libraries
+
+```{r Libraries}
+#open libraries
+pacman::p_load(haven, tidyverse, naniar, VIM, mice, lattice, table1, lubridate, DiagrammeR) 
+```
+
+## Load incident data
+
+```{r Load incident data}
+# Load incident data
+load("C:/Users/15416/OneDrive/Documents/Fall 2022/ADA/Final Project/ICPSR_38429/DS0004/Incident_Data.rda")
+
+# Rename dataframe
+incident_data <- da38429.0004
+rm(da38429.0004)
+```
+
+## Load Person Record Data
+
+```{r Load person record data}
+# Load person record data
+load("C:/Users/15416/OneDrive/Documents/Fall 2022/ADA/Final Project/ICPSR_38429/DS0003/38429-0003-Data.rda")
+
+person_data <- da38429.0003
+rm(da38429.0003)
+```
+
+## Merge Datasets
+
+```{r Merge datasets and exclude household screen questions}
+
+# Merge incident and person-level data
+# Per the code book: The person record-type file is merged to the incident record-type file using YEARQ (survey year), IDHH (the household ID), and IDPER (the person ID)
+
+person_incident <- merge(person_data, incident_data, by.x = c('YEARQ', 'IDHH', 'IDPER'),
+                         by.y = c('YEARQ','IDHH','IDPER')) %>%
+  # This next line renames a column that indicates whether the observation is for an    
+  # individual or household screen question
+  rename(ind_vs_hh = V4011) %>%
+  # Next line: Code from IPCSR codebook strips strings from values - leaving only numbers
+  mutate(ind_vs_hh = as.numeric(sub("^\\(0*([0-9]+)\\).+$", "\\1", ind_vs_hh))) %>%
+  mutate(ind_vs_hh = as.factor(ind_vs_hh)) 
+
+# Confirm same number of individual persons in both datasets
+n_distinct(person_incident$IDPER, na.rm = FALSE)
+# 6937
+n_distinct(incident_data$IDPER, na.rm = FALSE)
+# 6937
+```
+
+
+## Reduce dataset
+
+```{r Select variables}
+# Select variables of interest
+
+person_incident_ind_reduced <- person_incident %>% 
+  select(# survey variables
+    YEARQ, IDHH, IDPER, ind_vs_hh,
+         # injury type variables
+    V4112, V4113, V4114, V4115, V4116, V4117, V4118, V4119, V4120, V4121,
+    # Demographic variables
+    V3014, V3015, V3017, V3023A,
+    # Access care post injury
+         ## in community 
+         V4127, V4129, V4130, V4131,
+         ## at a medical facility
+         V4132, V4133, V4134, V4127, V4135, V4137,
+         ## MH services,
+         V4140B12, V4140B14, V4140B15, V4140B16, V4140B17, V4140B18,
+         ## post injury symptoms
+         V4140B28, V4140B30, V4140B31, V4140B32, V4140B33, V4140B34,
+         # victimization variables 
+         V4012, V4014, V4015, V4016,
+         # law enforcement involvement
+         V4399,
+         # Relationship to offender
+         V4513, V4514, V4515, V4516, V4517, V4518, V4519, V4520, V4522, V4522A, V4522B,
+         V4522C, V4522D, V4522E, V4522F, V4522G, V4522H, V4522I, V4245, V4235, V4241, V4243,
+    # violent crime close to residence?
+    V4024)
+
+```
+
+## Manage violent injury variables
+
+```{r Violent injury variables}
+# Manage the violent injury data
+
+# Code from IPCSR to strip strings from values - leaving only numbers
+## mutate(x = as.numeric(sub("^\\(0*([0-9]+)\\).+$", "\\1", x)))
+
+person_incident_vis <- person_incident_ind_reduced %>%
+  # Rename variables
+  rename(inj_rape = V4112) %>%
+  rename(inj_attp_rape = V4113) %>%
+  rename(inj_sex_aslt = V4114) %>%
+  rename(inj_stab = V4115) %>%
+  rename(inj_gsw = V4116) %>%
+  rename(inj_bbones = V4117) %>%
+  rename(inj_intrl = V4118) %>%
+  rename(inj_unconc = V4119) %>%
+  rename(inj_minor = V4120) %>%
+  rename(inj_other = V4121) %>%
+  # See above - the next 10 lines are for removing strings from values leaving only numbers
+  mutate(inj_rape = as.numeric(sub("^\\(0*([0-9]+)\\).+$", "\\1", inj_rape))) %>%
+  mutate(inj_attp_rape = as.numeric(sub("^\\(0*([0-9]+)\\).+$", "\\1", inj_attp_rape))) %>%
+  mutate(inj_sex_aslt = as.numeric(sub("^\\(0*([0-9]+)\\).+$", "\\1", inj_sex_aslt))) %>%
+  mutate(inj_stab = as.numeric(sub("^\\(0*([0-9]+)\\).+$", "\\1", inj_stab))) %>%
+  mutate(inj_gsw = as.numeric(sub("^\\(0*([0-9]+)\\).+$", "\\1", inj_gsw))) %>%
+  mutate(inj_bbones = as.numeric(sub("^\\(0*([0-9]+)\\).+$", "\\1", inj_bbones))) %>%
+  mutate(inj_intrl = as.numeric(sub("^\\(0*([0-9]+)\\).+$", "\\1", inj_intrl))) %>%
+  mutate(inj_unconc = as.numeric(sub("^\\(0*([0-9]+)\\).+$", "\\1", inj_unconc))) %>%
+  mutate(inj_minor = as.numeric(sub("^\\(0*([0-9]+)\\).+$", "\\1", inj_minor))) %>%
+  mutate(inj_other = as.numeric(sub("^\\(0*([0-9]+)\\).+$", "\\1", inj_other))) %>%
+  # The next line allows you to compute on a data frame a row-at-a-time
+  rowwise() %>%
+  # Summing across all injury types to create a total injuries per incident column
+  mutate(inj_sum = sum(c_across(inj_rape:inj_other))) %>%
+  relocate(inj_sum, .after = inj_other) %>%
+  # Recode injury type variables to factors and recode values to NA
+  mutate(inj_rape = recode_factor(inj_rape,
+                                  "0" = "0",
+                                  "1" = "1",
+                                  "8" = NA_character_,
+                                  "9" = NA_character_)) %>%
+  mutate(inj_attp_rape = recode_factor(inj_attp_rape,
+                                  "0" = "0",
+                                  "1" = "1",
+                                  "8" = NA_character_,
+                                  "9" = NA_character_)) %>%
+  mutate(inj_sex_aslt = recode_factor(inj_sex_aslt,
+                                  "0" = "0",
+                                  "1" = "1",
+                                  "8" = NA_character_,
+                                  "9" = NA_character_)) %>%
+  mutate(inj_stab = recode_factor(inj_stab,
+                                  "0" = "0",
+                                  "1" = "1",
+                                  "8" = NA_character_,
+                                  "9" = NA_character_)) %>%
+  mutate(inj_gsw = recode_factor(inj_gsw,
+                                  "0" = "0",
+                                  "1" = "1",
+                                  "8" = NA_character_,
+                                  "9" = NA_character_)) %>%
+  mutate(inj_bbones = recode_factor(inj_bbones,
+                                  "0" = "0",
+                                  "1" = "1",
+                                  "8" = NA_character_,
+                                  "9" = NA_character_)) %>%
+  mutate(inj_intrl = recode_factor(inj_intrl,
+                                  "0" = "0",
+                                  "1" = "1",
+                                  "8" = NA_character_,
+                                  "9" = NA_character_)) %>%
+  mutate(inj_unconc = recode_factor(inj_unconc,
+                                  "0" = "0",
+                                  "1" = "1",
+                                  "8" = NA_character_,
+                                  "9" = NA_character_)) %>%
+  mutate(inj_minor = recode_factor(inj_minor,
+                                  "0" = "0",
+                                  "1" = "1",
+                                  "8" = NA_character_,
+                                  "9" = NA_character_)) %>%
+  mutate(inj_other = recode_factor(inj_other,
+                                  "0" = "0",
+                                  "1" = "1",
+                                  "8" = NA_character_,
+                                  "9" = NA_character_)) 
+
+# Examine recoding
+table1(~ inj_rape + inj_attp_rape + inj_sex_aslt + inj_stab + inj_gsw + inj_bbones
+       + inj_intrl + inj_unconc + inj_minor + inj_other + inj_sum, data = person_incident_vis)
+
+# Summing total number of injuries in the dataset
+sum(person_incident_vis$inj_sum, na.rm = TRUE)
+# 465 total injuries in the dataset
+```
+
+```{r exclude incidents w/o an injury}
+
+# Filter to only include incidents involving a violent injury
+person_incident_vinj <- person_incident_vis %>%
+  filter(!is.na(inj_sum) & inj_sum >= 1)
+   # Only includes participants who report at least one violent injury
+
+# confirmed the same number of injuries reported after dropping participants who had no violent injury    
+sum(person_incident_vinj$inj_sum, na.rm = TRUE)
+# Confirmed: 465
+
+n_distinct(person_incident_vinj$IDPER)
+# 339 unique individuals
+```
+
+```{r create injury type variable}
+
+# Create injury type variable
+person_incident_vinj <- person_incident_vinj %>%
+  mutate(inj_type = case_when(inj_rape == "1" ~ "Sexual Assault",
+                              inj_attp_rape == "1" ~ "Sexual Assault",
+                              inj_stab == "1" ~ "Severe",
+                              inj_gsw == "1" ~ "Severe",
+                              inj_bbones == "1" ~ "Severe",
+                              inj_intrl == "1" ~ "Severe",
+                              inj_unconc == "1" ~ "Severe",
+                              inj_minor == "1" ~ "Minor",
+                              inj_other == "1" ~ "Other"))
+
+table1(~inj_type, data = person_incident_vinj)
+```
+
+```{r Demographics}
+
+# Recode demographics
+
+per_incdt_vinj_demo <- person_incident_vinj %>%
+  rename(age = V3014) %>%
+  rename(bio_sex = V3017) %>%
+  mutate(bio_sex = as.numeric(sub("^\\(0*([0-9]+)\\).+$", "\\1", bio_sex))) %>%
+  mutate(bio_sex = recode_factor(bio_sex, '1' = 'Male',
+                                 '2' = 'Female',
+                                 '8' = NA_character_)) %>%
+  rename(race = V3023A) %>%
+  mutate(race = as.numeric(sub("^\\(0*([0-9]+)\\).+$", "\\1", race))) %>%
+  mutate(race = recode_factor(race, '01' = 'White',
+                              '02' = 'Black',
+                              '03' = 'Other', # was American Indian/Alaska Native
+                              '04' = 'Other', # was Asian
+                              '05' = 'Other', # was Hawaiian/Pacific Islander
+                              '06' = 'Other', # was mixed race
+                              '07' = 'Other', # was mixed race
+                              '08' = 'Other', # was mixed race
+                              '09' = 'Other', # was mixed race
+                              '10' = 'Other', # was mixed race
+                              '11' = 'Other', # was mixed race
+                              '12' = 'Other', # was mixed race
+                              '13' = 'Other', # was mixed race
+                              '14' = 'Other', # was mixed race
+                              '15' = 'Other', # was mixed race
+                              '16' = 'Other', # was mixed race
+                              '17' = 'Other', # was mixed race
+                              '18' = 'Other', # was mixed race
+                              '19' = 'Other', # was mixed race
+                              '20' = 'Other', # was mixed race
+                              '98' = NA_character_,
+                              '-1' = NA_character_,
+                              '99' = NA_character_))
+  
+  
+table1(~ age + bio_sex + race, data = per_incdt_vinj_demo)
+```
+
+```{r Exposure variable}
+
+# Create exposure variable - accessing medical care after violent injury (sought_care binary Y/N)
+
+## Step #1: Recode all variables that will be combined to create the single binary variable
+
+per_incdt_vinj_demoV2 <- per_incdt_vinj_demo %>%
+  rename(incdt_num = V4012) %>%
+  
+  # Variables related to accessing medical care (physical health) immediately after injury
+  # Did you seek any medical care following your injury?
+  rename(seek_care = V4127) %>%
+  mutate(seek_care = as.numeric(sub("^\\(0*([0-9]+)\\).+$", "\\1", seek_care))) %>%
+  mutate(seek_care = recode_factor(seek_care, '1' = 'Yes',
+                                 '2' = 'No',
+                                 '8' = NA_character_,
+                                 '9' = NA_character_)) %>%
+  
+  # The next few variables correspond to seeking medical care at the scene of the crime,
+  # at home, or at a first aid station. We are not considering these to be accessing medical
+  # care
+  rename(med_atscene = V4129) %>%
+  mutate(med_atscene = as.numeric(sub("^\\(0*([0-9]+)\\).+$", "\\1", med_atscene))) %>%
+  mutate(med_atscene = recode_factor(med_atscene, '1' = 'Yes',
+                                 '0' = 'No',
+                                 '8' = NA_character_,
+                                 '9' = NA_character_)) %>%
+  rename(med_home = V4130) %>%
+  mutate(med_home = as.numeric(sub("^\\(0*([0-9]+)\\).+$", "\\1", med_home))) %>%
+  mutate(med_home = recode_factor(med_home, '1' = 'Yes',
+                                 '0' = 'No',
+                                 '8' = NA_character_,
+                                 '9' = NA_character_)) %>%
+  rename(med_fastation = V4131) %>%
+  mutate(med_fastation = as.numeric(sub("^\\(0*([0-9]+)\\).+$", "\\1", med_fastation))) %>%
+  mutate(med_fastation = recode_factor(med_fastation, '1' = 'Yes',
+                                 '0' = 'No',
+                                 '8' = NA_character_,
+                                 '9' = NA_character_)) %>%
+  
+  # The next few variables are related to seeking care at a medical or behavioral health facility
+  # Access care at a doctor's office?
+  rename(med_docoffice = V4132) %>%
+  mutate(med_docoffice = as.numeric(sub("^\\(0*([0-9]+)\\).+$", "\\1", med_docoffice))) %>%
+  mutate(med_docoffice = recode_factor(med_docoffice, '1' = 'Yes',
+                                 '0' = 'No',
+                                 '8' = NA_character_,
+                                 '9' = NA_character_)) %>%
+  # Emergency Dept?
+  rename(med_ed = V4133) %>%
+  mutate(med_ed = as.numeric(sub("^\\(0*([0-9]+)\\).+$", "\\1", med_ed))) %>%
+  mutate(med_ed = recode_factor(med_ed, '1' = 'Yes',
+                                 '0' = 'No',
+                                 '8' = NA_character_,
+                                 '9' = NA_character_)) %>%
+  # Hospital other than ED?
+  rename(med_hosp = V4134) %>%
+  mutate(med_hosp = as.numeric(sub("^\\(0*([0-9]+)\\).+$", "\\1", med_hosp))) %>%
+  mutate(med_hosp = recode_factor(med_hosp, '1' = 'Yes',
+                                 '0' = 'No',
+                                 '8' = NA_character_,
+                                 '9' = NA_character_)) %>%
+  # Other medical facility
+  rename(med_other = V4135) %>%
+  mutate(med_other = as.numeric(sub("^\\(0*([0-9]+)\\).+$", "\\1", med_other))) %>%
+  mutate(med_other = recode_factor(med_other, '1' = 'Yes',
+                                 '0' = 'No',
+                                 '8' = NA_character_,
+                                 '9' = NA_character_)) %>%
+  # Admitted to the hospital?
+  rename(med_admit = V4137) %>%
+  mutate(med_admit = as.numeric(sub("^\\(0*([0-9]+)\\).+$", "\\1", med_admit))) %>%
+  mutate(med_admit = recode_factor(med_admit, '1' = 'Yes',
+                                 '2' = 'No',
+                                 '8' = NA_character_,
+                                 '9' = NA_character_)) %>%
+  # Accessing mental health care following injury?
+  rename(seek_mh = V4140B12) %>%
+  mutate(seek_mh = as.numeric(sub("^\\(0*([0-9]+)\\).+$", "\\1", seek_mh))) %>%
+  mutate(seek_mh = recode_factor(seek_mh, '1' = 'Yes',
+                                 '2' = 'No',
+                                 '8' = NA_character_,
+                                 '-1' = NA_character_,
+                                 '9' = NA_character_)) %>%
+   # Accessing health care post injury (not immediately following)?
+  rename(seek_care_post = V4140B28) %>%
+  mutate(seek_care_post = as.numeric(sub("^\\(0*([0-9]+)\\).+$", "\\1", seek_care_post))) %>%
+  mutate(seek_care_post = recode_factor(seek_care_post, '1' = 'Yes',
+                                 '2' = 'No',
+                                 '8' = NA_character_,
+                                 '-1' = NA_character_,
+                                 '9' = NA_character_)) %>%
+ 
+## Step 2: combine individual medical care variables to create single binary variable (sought_care)
+  
+  # Variable 1: Received medical care somewhere other than a medical facility?
+  ## Note: not considering this category to have accessed medical care
+  mutate(nonfacility_care = ifelse(med_atscene == 'Yes' | med_home == 'Yes' |
+                                    med_fastation == 'Yes', 'Yes', 'No')) %>%
+  # Since we are considering receiving care outside of a healthcare facility as not receiving care, 
+  # accessing care outside of a healthcare facility is considered a no (nonfacility_psuedo)
+  mutate(nonfacility_pseudo = ifelse(!is.na(nonfacility_care), 'No', NA_character_)) %>%
+  # Received care at a medical facility?
+  mutate(facility_care = ifelse(med_docoffice == 'Yes' | med_ed == 'Yes' |
+                                    med_hosp == 'Yes' | med_admit == 'Yes', 'Yes', 'No')) %>%
+  # Received care for any of the three categories?
+  mutate(sought_care = coalesce(facility_care, seek_mh, seek_care_post, nonfacility_pseudo, seek_care)) %>%
+  relocate(sought_care, .after = seek_care)
+
+# Examine all aggregate variables related to receipt of care
+table1(~ facility_care + sought_care + seek_care + seek_mh + nonfacility_pseudo +
+       seek_care_post , data = per_incdt_vinj_demoV2)
+```
+
+```{r create repeat injury variable}
+
+# Create repeat injury variable
+
+per_incdt_vinj_demoV3 <- per_incdt_vinj_demoV2 %>%
+  # Create Month/year of incident variable. We will perform analysis on the index injury
+  # for the year. Creating this variable will allow us to tag the index incident per participant
+  # and drop all other incidents  prior to analysis
+  rename(month_incident = V4014) %>%
+  mutate(month_incident = as.numeric(sub("^\\(0*([0-9]+)\\).+$", "\\1", month_incident))) %>%
+  # This next line of code adds a leading 0 to single digit months (e.g., 1 becomes 01)
+  mutate(month_incident = as.character(sprintf("%02d", month_incident))) %>%
+  rename(year_incident = V4015) %>%
+  mutate(year_incident = as.character(sub("^\\(0*([0-9]+)\\).+$", "\\1", year_incident))) %>%
+  # Create a month-year(my) date column
+  mutate(my_incident = paste(month_incident, year_incident, sep = "-")) %>%
+  # Employ lubridate function to change datatype from character to date
+  mutate(my_incident = my(my_incident)) %>%
+  group_by(IDPER) %>%
+  # This next line of code creates a column, indicating the number of observations in the dataset per each participant ID - 
+  # this corresponds to the number of incidents reported per participant where a violent injury occurred 
+  mutate(n_obs=n()) %>%
+  # Recode variable: How many times did an incident like this occur in the last 6 months? 
+  rename(num_incdt_6mos = V4016) %>%
+  mutate(num_incdt_6mos = na_if(num_incdt_6mos, 997)) %>%
+  # Create reinjured Y/N binary variable
+  ## Yes if participant reported multiple incidents within the study period, OR they indicated a similar incident occurred more than once. 
+  mutate(repeatinj_yn = as.factor(ifelse(n_obs >1 | num_incdt_6mos > 1, 'Yes', 'No')))
+
+table1(~ num_incdt_6mos + repeatinj_yn + n_obs, data = per_incdt_vinj_demoV3)
+```
+
+```{r Recode law enforcement, relationship to perpetrator, and crime location variable}
+
+# recode law enforcement, relationship to perpetrator, and incident location variables
+
+per_incdt_vinj_demoV4 <- per_incdt_vinj_demoV3 %>%
+  # Was law enforcement called?
+  rename(report_LE = V4399) %>%
+  mutate(report_LE = as.numeric(sub("^\\(0*([0-9]+)\\).+$", "\\1", report_LE))) %>%
+  mutate(report_LE = recode_factor(report_LE, '1' = 'Yes',
+                                  '2' = 'No',
+                                  '3' = NA_character_,
+                                  '8' = NA_character_,
+                                  '9' = NA_character_)) %>%
+  # What is your relationship to the perpetrator?
+  rename(reltin_perp = V4245) %>%
+  mutate(reltin_perp = na_if(reltin_perp, '(98) Residue')) %>%
+  # How well do you know the perpetrator?
+  rename(welknwn_perp = V4243) %>%
+  mutate(welknwn_perp = na_if(welknwn_perp, '(8) Residue')) %>%
+  mutate(welknwn_perp = na_if(welknwn_perp, '(6) DK know if 2, 3')) %>%
+  # Was the perpetrator a stranger or someone you knew?
+  rename(strange_perp = V4241) %>%
+  mutate(strange_perp = na_if(strange_perp, '(8) Residue')) %>%
+  mutate(strange_perp = na_if(strange_perp, '(3) Don\'t know')) %>%
+  # Do you know anything about the offenders
+  rename(know_anything = V4235) %>%
+  mutate(know_anything = na_if(know_anything, '(8) Residue')) %>%
+  # Coalesce these variables with preference for the most informative
+  mutate(know_perp = coalesce(reltin_perp, welknwn_perp, strange_perp, know_anything))
+
+# Examine all variables related to how the victim knows the perpetrator
+table1(~ reltin_perp + know_anything + welknwn_perp + strange_perp + know_perp, data = per_incdt_vinj_demoV4)
+
+# Create knows_perp variable by condensing know_perp variable to the following categories
+## intimate partner: 100
+## relative: 47
+## Other known: 67
+## Stranger: 97
+
+per_incdt_vinj_demoV4 <- per_incdt_vinj_demoV4 %>%
+  mutate(knows_perp = case_when(know_perp == "(01) Spouse" ~ "Intimate Partner",
+                                know_perp == "(02) Ex-spouse" ~ "Intimate Partner",
+                                know_perp == "(03) Par or step-par" ~ "Relative",
+                                know_perp == "(04) R child or step" ~ "Relative",
+                                know_perp == "(05) Brother/sister" ~ "Relative",
+                                know_perp == "(06) Other relative" ~ "Relative",
+                                know_perp == "(07) Boy/girlfrnd, ex" ~ "Intimate Partner",
+                                know_perp == "(08) Friend or ex" ~ "Other Known",
+                                know_perp == "(09) Roommate, board" ~ "Other Known",
+                                know_perp == "(10) Schoolmate" ~ "Other Known",
+                                know_perp == "(11) Neighbor" ~ "Other Known",
+                                know_perp == "(12) Customer/client" ~ "Other Known",
+                                know_perp == "(13) Other nonrelative" ~ "Other Known",
+                                know_perp == "(14) Patient" ~ "Other Known",
+                                know_perp == "(15) Supervisor(cur/former)" ~ "Other Known",
+                                know_perp == "(17) Coworker(cur/former)"~ "Other Known",
+                                know_perp == "(1) Sight only"~ "Stranger",
+                                know_perp == "(2) Casual acquaint"~ "Other Known",
+                                know_perp == "(2) Stranger"~ "Stranger",
+                                know_perp == "(2) No"~ "Stranger")) %>%
+  dplyr::select(-c(reltin_perp, know_anything, welknwn_perp, strange_perp, know_perp)) %>%
+  # Where did the incident happen?
+  rename(incdt_location = V4024) %>%
+  mutate(incdt_location = as.numeric(sub("^\\(0*([0-9]+)\\).+$", "\\1", incdt_location))) %>%
+  mutate(incdt_location = as.factor(incdt_location)) %>%
+  # Is the location somewhere where the participant lives, learns, or works?
+  mutate(incdt_location = recode_factor(incdt_location, '1' = 'Yes',
+                                 '2' = 'Yes',
+                                 '3' = 'Yes',
+                                 '4' = 'No',
+                                 '5' = 'Yes',
+                                 '6' = 'Yes',
+                                 '7' = 'Yes',
+                                 '8' = 'Yes',
+                                 '9' = 'Yes',
+                                 '10' = 'Yes',
+                                 '11' = 'Yes',
+                                 '12' = 'No',
+                                 '13' = 'No',
+                                 '14' = 'Yes', # was inside office
+                                 '15' = 'No',
+                                 '16' = 'No',
+                                 '17' = 'Yes',
+                                 '18' = 'Yes', # was school building
+                                 '19' = 'Yes', # was on school property
+                                 '20' = 'No',
+                                 '21' = 'No',
+                                 '22' = 'No',
+                                 '23' = NA_character_, # was other
+                                 '24' = 'No',
+                                 '25' = 'No',
+                                 '26' = 'No',
+                                 '27' = 'Yes', # was factory or warehouse
+                                 '98' = NA_character_,
+                                 '99' = NA_character_))
+                                
+  
+  
+table1(~ knows_perp + report_LE, data = per_incdt_vinj_demoV4)
+
+table1(~ incdt_location, data = per_incdt_vinj_demoV4)
+
+```
+
+```{r Collapse observations}
+
+# Collapse observations and include only variables used in the analysis
+
+n_distinct(per_incdt_vinj_demoV4$IDPER)
+# 339 - expected number of observations after collapsing incidents by participant ID
+
+per_incdt_final <- per_incdt_vinj_demoV4 %>%
+  dplyr::select(YEARQ, IDHH, IDPER, age, bio_sex, race, my_incident, knows_perp, report_LE, inj_type, incdt_location, sought_care, 
+         repeatinj_yn) %>%
+  group_by(IDPER) %>%
+  # Rearranges the data so the initial injury per participant is first - this will be the incident we use in the analysis
+  arrange(my_incident, .by_group = TRUE) %>%
+  summarise(across(everything(), ~.[which(!is.na(.))[1]])) # collapses dataset so only first observation that is not NA for each column per study ID is retained
+
+```
+
+
+```{r Randomly sample one participant per household}
+
+# Determine number of unique household
+n_distinct(per_incdt_final$IDHH) 
+# 337 - indicating only two pairs of observations live in the same household. Only two
+# participants need to be dropped from the analysis to meet the independent observations
+# assumption
+
+# Drop one participant from each household
+
+per_incdt_final <- per_incdt_final %>%
+  distinct(IDHH, .keep_all = TRUE)
+# N = 337
+
+```
+
+## Create Table 1
+
+```{r}
+label(per_incdt_final$age) <- "Age"
+label(per_incdt_final$bio_sex) <- "Sex"
+label(per_incdt_final$race) <- "Race"
+label(per_incdt_final$knows_perp) <- "Relationship to Perpetrator"
+label(per_incdt_final$report_LE) <- "Reported to Law Enforcement"
+label(per_incdt_final$inj_type) <- "Injury Type"
+label(per_incdt_final$sought_care) <- "Accessed Healthcare for Injury"
+label(per_incdt_final$repeatinj_yn) <- "Experienced Violent Reinjury"
+label(per_incdt_final$incdt_location) <- "Occurred Near Residence"
+
+# Create table1
+table1(~ age + bio_sex + race + knows_perp + report_LE + inj_type + sought_care + 
+         repeatinj_yn + incdt_location, data = per_incdt_final)
+
+# By exposure:
+table1(~ age + bio_sex + race + knows_perp + report_LE + inj_type +  
+         repeatinj_yn + incdt_location | sought_care, data = per_incdt_final,
+       render.continuous = "Median (IQR)")
+
+# By outcome:
+table1(~ age + bio_sex + race + knows_perp + report_LE + inj_type +  
+         sought_care + incdt_location | repeatinj_yn, data = per_incdt_final,
+       render.continuous = "Median (IQR)")
+
+
+```
+
+
+## Create Figure 1
+
+```{r dev = "png"}
+# Create Figure 1 (Participant inclusion/exclusion criteria)
+
+# From person level data
+n_distinct(person_data$IDPER)
+# 193039 distinct people
+
+# Merged with incident data
+n_distinct(person_incident$IDPER)
+# 6937 people reported a crime victimization incident
+
+# Dropped participants who did not sustain a violent injury during victimization incident
+n_distinct(person_incident_vinj$IDPER)
+# 339 unique individuals
+
+# Randomly sample one participant from each household
+# 337 final observations
+
+#Figure 1
+grViz("digraph flowchart {
+
+      # node definitions with substituted label text
+      node [fontname = Cambria, shape = rectangle, fontsize=10, width = 6] 
+      # notes indicate how many boxes you will have in your diagram. Since I have two sets of exclusions, I will have three nodes.
+      tab1 [label = '@@1'] # starting
+      tab2 [label = '@@2'] # exclusion 1
+      tab3 [label = '@@3'] # exclusion 2
+      tab4 [label = '@@4'] # exclusion 3
+      
+      # edge definitions with the node IDs are used to indicate how the rectangle boxes flow from each other. This is a simple flow chart but I could create branching instead as below
+      tab1 -> tab2 -> tab3 -> tab4 
+}
+      #This set of code provides the text in each rectangle box.
+      [1]: 'Total NCVS survey respondents n=193,039'
+      [2]: 'Excluding 186,102 individuals who indicated they were not the victim of a crime in 2021 n=6,937'
+      [3]: 'Excluding 6,598 individuals who indicated they were not injured during their victimization n=339'
+      [4]: 'Excluding 2 individuals who lived in the same household as other participants in the sample n=337'
+      ")
+
+```
+
+
+```{r Export final dataset}
+
+# Remove all dataframes from the environemnt except for the final
+rm(list=setdiff(ls(), "per_incdt_final"))
+
+# Export final dataset
+write.csv(per_incdt_final,"C:/Users/15416/OneDrive/Documents/Fall 2022/ADA/Final Project/ICPSR_38429/Final_project_data.csv",
+          row.names = FALSE)
+```
+
